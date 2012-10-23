@@ -48,17 +48,23 @@ typedef enum {
    P7V_OK = 0,
    P7V_INPUT_OPEN_FAILED = 1,
    P7V_OUTPUT_OPEN_FAILED = 2,
-   P7V_VERIFICATION_FAILED = 3,
-   P7V_NSS_INIT_FAILED = 4,
-   P7V_CMS_DECODER_START_FAILED = 5,
-   P7V_CMS_DECODER_UPDATE_FAILED = 6,
-   P7V_CMS_DECODER_FINISH_FAILED = 6,
-   P7V_CMS_CERT_IMPORT_FAILED = 7,
+   P7V_OUTPUT_WRITE_FAILED = 3,
+   P7V_VERIFICATION_FAILED = 4,
+   P7V_NSS_INIT_FAILED = 5,
+   P7V_CMS_DECODER_START_FAILED = 6,
+   P7V_CMS_DECODER_UPDATE_FAILED = 7,
+   P7V_CMS_DECODER_FINISH_FAILED = 8,
+   P7V_CMS_CERT_IMPORT_FAILED = 9,
 } p7v_result_t;
 
 typedef struct {
+   /** Memory pool for NSS. */
    PLArenaPool *p_arena;
+   /** Output file stream. */
    FILE *output;
+   /** Flag set if a write error occurs while decoding. */
+   int write_error;
+   /** The NSS Decoder context. */
    NSSCMSDecoderContext *p_context;
 } p7v_decoder_t;
 
@@ -73,7 +79,7 @@ init (const char *dir) {
    p7v_result_t result;
 
    trace_init ();
-   TRACE3 (("called with dir='%s'"));
+   TRACE3 (("called with dir='%s'", dir));
 
    PR_Init (PR_SYSTEM_THREAD, PR_PRIORITY_NORMAL, 1);
    SECStatus sts = NSS_Init (dir);
@@ -104,13 +110,18 @@ init (const char *dir) {
   */
 static void
 content_cb (void *arg, const char *buf, unsigned long len) {
+
    p7v_decoder_t *p_decoder = arg;
+   size_t written;
 
    TRACE3 (("called with arg=%p, buf=%p, len=%lu", arg, buf, len));
 
    /* Write decoded output. */
-   /* FIXME: check write() result. */
-   (void) fwrite (buf, len, 1, p_decoder->output);
+   written = fwrite (buf, len, 1, p_decoder->output);
+   if (written != 1) {
+      TRACE1 (("failed to write %u bytes!", len));
+      p_decoder->write_error = 1;
+   }
 
    TRACE3 (("exiting"));
 }
@@ -146,6 +157,7 @@ decoder_setup (FILE *output, p7v_decoder_t *p_decoder) {
       else {
          p_decoder->output = output;
          p_decoder->p_context = ctx;
+         p_decoder->write_error = 0;
          result = P7V_OK;
       }
    }
@@ -464,6 +476,11 @@ main (int argc, char **argv) {
       if (r > 0) {
          result = decoder_feed (decoder, buffer, r); 
          if (result != P7V_OK) break;
+         if (decoder.write_error != 0) {
+            TRACE1 (("aborting decoding due to a write error!"));
+            result = P7V_OUTPUT_WRITE_FAILED;
+            break;
+         }
       }
    }
 
@@ -479,7 +496,7 @@ main (int argc, char **argv) {
    /* On failure, the output shall be deleted (if not stdout). */
    if (result != P7V_OK) {
       if (fout != stdout) {
-         (void) unlink (argv [2]);
+         (void) unlink (output);
       }
    }
    else if (verbose) {
