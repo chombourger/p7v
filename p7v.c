@@ -27,11 +27,9 @@
 
 #include <stdio.h>
 #include <unistd.h>
-
+#include <getopt.h>
+     
 #include "internal.h"
-
-/** Path to our NSS database. */
-#define NSS_DB_DIR "../test.db"
 
 /** Usage to be provided during the verification process. */
 #define NSS_CERT_USAGE certUsageObjectSigner
@@ -39,7 +37,11 @@
 /** Size of the arena to be allocated. */
 #define NSS_ARENA_SIZE 4096
 
-int verbose = 1;
+/** Flag set by --verbose. */
+static int verbose;
+
+/** Path to the NSS database. */
+static char *nssdir = 0;
 
 /* P7V error codes. */
 typedef enum {
@@ -62,22 +64,23 @@ typedef struct {
 
 /**
   * Initialize P7V.
+  * @param dir NSS database and configuration directory.
   * @return P7V_OK on success, an error code otherwise.
   */
 static p7v_result_t
-init () {
+init (const char *dir) {
 
    p7v_result_t result;
 
    trace_init ();
-   TRACE3 (("called"));
+   TRACE3 (("called with dir='%s'"));
 
    PR_Init (PR_SYSTEM_THREAD, PR_PRIORITY_NORMAL, 1);
-   SECStatus sts = NSS_Init (NSS_DB_DIR);
+   SECStatus sts = NSS_Init (dir);
    TRACE4 (("NSS_Init() returned %d", sts));
 
    if (sts == SECSuccess) {
-      TRACE4 (("NSS %s initialized", NSS_GetVersion ()));
+      TRACE4 (("NSS initialized"));
       result = P7V_OK;
    }
    else {
@@ -123,7 +126,6 @@ content_cb (void *arg, const char *buf, unsigned long len) {
 static p7v_result_t
 decoder_setup (FILE *output, p7v_decoder_t *p_decoder) {
 
-   SECStatus sts;
    p7v_result_t result;
 
    TRACE3 (("called with output=%p, p_decoder=%p", output, p_decoder));
@@ -370,18 +372,53 @@ int
 main (int argc, char **argv) {
 
    FILE *fin, *fout;
+   char *output = 0;
    p7v_decoder_t decoder;
    int result;
+   int c;
+     
+   while (1) {
+      static struct option long_options [] = {
+         { "verbose", no_argument, &verbose, 1 },
+         { 0,         0,           0,        0 }
+      };
+
+      /* getopt_long stores the option index here. */
+      int option_index = 0;
+     
+      c = getopt_long (argc, argv, "d:o:v", long_options, &option_index);
+     
+      /* Detect the end of the options. */
+      if (c == -1) {
+         break;
+      }
+     
+      switch (c) {
+
+         case 'd':
+            nssdir = optarg;
+            break;
+
+         case 'o':
+            output = optarg;
+            break;
+
+         case 'v':
+            verbose = 1;
+            break;
+      }
+   }
+
 
    /* Open input file for reading. Use stdin if none supplied. */
-   if (argc > 1) {
-      fin = fopen (argv [1], "r");
+   if (optind < argc) {
+      fin = fopen (argv [optind], "r");
       if (fin == 0) {
-         fprintf (stderr, "failed to open input file '%s'!\n", argv [1]);
+         fprintf (stderr, "failed to open input file '%s'!\n", argv [optind]);
          return P7V_INPUT_OPEN_FAILED;
       }
       else if (verbose) {
-         fprintf (stderr, "opened '%s' for reading.\n", argv [1]);
+         fprintf (stderr, "opened '%s' for reading.\n", argv [optind]);
       }
    }
    else {
@@ -389,14 +426,14 @@ main (int argc, char **argv) {
    }
 
    /* Open output file for writing. Use stdout if none supplied. */
-   if (argc > 2) {
-      fout = fopen (argv [2], "w");
+   if (output != 0) {
+      fout = fopen (output, "w");
       if (fout == 0) {
-         fprintf (stderr, "failed to open output file '%s'!\n", argv [2]);
+         fprintf (stderr, "failed to open output file '%s'!\n", output);
          return P7V_OUTPUT_OPEN_FAILED;
       }
       else if (verbose) {
-         fprintf (stderr, "opened '%s' for writing.\n", argv [2]);
+         fprintf (stderr, "opened '%s' for writing.\n", output);
       }
    }
    else {
@@ -404,7 +441,7 @@ main (int argc, char **argv) {
    }
 
    /* Initialize ourselves. */
-   result = (int) init ();
+   result = (int) init (nssdir);
    if (result != P7V_OK) {
       fprintf (stderr, "initialization failed (%d)!\n", result);
       return result;
