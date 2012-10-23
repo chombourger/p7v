@@ -1,0 +1,174 @@
+#!/bin/bash
+
+NSS_DB=tests.db
+PASS=abcdefg
+P7V=${P7V:-../p7v}
+GOLDEN_DIR=golden
+
+self_signed_cert=self.cert
+pass_file=passwd.txt
+
+create_pass_file() {
+   echo "${PASS}" > ${pass_file}
+}
+
+delete_pass_file() {
+   rm -f ${pass_file}
+}
+
+create_self_signed_cert() {
+   openssl req -x509 -newkey rsa:1024 -keyout ${self_signed_cert} -out ${self_signed_cert}.pub \
+   -passout pass:abcdefg -subj "/C=US/ST=IL/L=Chicago/O=Dummy/OU=Test/CN=John Doe/emailAddress=john.doe@dummy.me"
+}
+
+delete_self_signed_cert() {
+   rm -f ${self_signed_cert} ${self_signed_cert}.pub
+}
+
+create_nss_db() {
+   mkdir ${NSS_DB} && certutil -N -d ${NSS_DB} -f ${pass_file}
+}
+
+delete_nss_db() {
+   rm -rf ${NSS_DB}
+}
+
+add_cert_to_db() {
+   certutil -A -d ${NSS_DB} -n ${1} -i ${2} -t P,P,P
+}
+
+revoke_cert() {
+   certutil -M -d ${NSS_DB} -n ${1} -t p,p,p
+}
+
+trust_cert() {
+   certutil -M -d ${NSS_DB} -n ${1} -t P,P,P
+}
+
+create_random_data() {
+   MB=${MB:-1}
+   dd if=/dev/urandom of=${1} bs=1024 count=$((${MB} * 1024)) 2> /dev/null
+}
+
+run_tests() {
+   local s
+   local file
+   local MB
+   local result
+
+   for s in 1 2 4 8 16 32 64 128 256 512
+   do
+      echo "# TEST ${1} with ${s}MB data"
+
+      expected_result=${expected_result:-0}
+      file=${1}-test-${s}MB
+      MB=${s} create_random_data ${file}.raw
+      openssl smime -passin pass:abcdefg -binary -sign -signer ${self_signed_cert}.pub -inkey ${self_signed_cert} -in ${file}.raw -out ${file}.signed -outform DER -nodetach
+  
+      if [ ${1} = "write-failure" ]
+      then
+         size=2
+         ulimit -S -f ${size}
+      else
+         ulimit -S -f unlimited
+      fi
+ 
+      if [ ${1} = "altered-package" ]
+      then
+         seek=$((${s} * 1024 / 2))
+         dd if=/dev/urandom of=${file}.signed seek=${seek} conv=notrunc bs=1024 count=1 2> /dev/null
+      fi
+
+      ${P7V} -v -d ${NSS_DB} -o ${file}.p7v ${file}.signed \
+         > ${file}.stdout 2> ${file}.stderr
+   
+      result=${?}
+
+      if [ ${1} = "write-failure" ]
+      then
+         ulimit -S -f unlimited
+      fi
+
+      if [ ${result} -ne ${expected_result} ]
+      then
+         echo "P7V exited with status ${result} but ${expected_result} expected!" >&2
+         return ${result}
+      fi
+ 
+      # Is the decoded file present?
+      if [ ${expected_result} -eq 0 ]
+      then 
+
+         if [ ! -f ${file}.p7v ]
+         then
+            echo "P7V returned success but output file not found!" >&2
+            return 1
+         fi
+
+         # Compare the output file with the raw file
+         cmp ${file}.raw ${file}.p7v
+         result=${?}
+         if [ ${result} -ne 0 ]
+         then
+            echo "decoded file does not match raw input file!" >&2
+            return ${result}
+         fi
+      else
+         if [ -f ${file}.p7v ]
+         then
+            echo "P7V returned error but output file found!" >&2
+            return 1
+         fi
+      fi
+   
+      # Compare the tool standard output with golden sample
+      if [ -f ${GOLDEN_DIR}/${file}.stdout ]
+      then
+         cmp ${file}.stdout ${GOLDEN_DIR}/${file}.stdout
+         result=${?}
+         if [ ${result} -ne 0 ]
+         then
+            echo "stdout output does not match!" 2>&1
+            return ${result}
+         fi
+      fi
+   
+      # Compare the tool standard error with golden sample
+      if [ -f ${GOLDEN_DIR}/${file}.stderr ]
+      then
+         cmp ${file}.stderr ${GOLDEN_DIR}/${file}.stderr
+         result=${?}
+         if [ ${result} -ne 0 ]
+         then
+            echo "stderr output does not match!" 2>&1
+            return ${result}
+         fi
+      fi
+
+      # Update golden?
+      if [ "${UPDATE_GOLDEN}" != "" ]
+      then
+         mv ${file}.stdout ${file}.stderr ${GOLDEN_DIR}
+      fi
+
+      rm -f ${file}.raw ${file}.signed ${file}.p7v ${file}.stdout ${file}.stderr
+   done
+   return 0
+}
+
+unset P7V_TRACE_APPLICATION
+ 
+create_pass_file \
+&& delete_nss_db \
+&& create_nss_db \
+&& create_self_signed_cert \
+&& add_cert_to_db self ${self_signed_cert}.pub \
+&& expected_result=0 run_tests trusted-signer \
+&& revoke_cert self \
+&& expected_result=4 run_tests revoked-signer \
+&& trust_cert self \
+&& expected_result=4 run_tests altered-package \
+&& delete_nss_db \
+&& delete_self_signed_cert \
+&& delete_pass_file
+
