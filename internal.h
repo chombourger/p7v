@@ -23,8 +23,10 @@
 #define P7V_INTERNAL_H
 
 #define _GNU_SOURCE 1
-#define HAVE_STDARG_H 1
-#define HAVE_STDLIB_H 1
+
+#ifdef HAVE_CONFIG_H
+#include "config.h"
+#endif
 
 #ifndef  TRACE_CLASS_DEFAULT
 #define  TRACE_CLASS_DEFAULT APPLICATION

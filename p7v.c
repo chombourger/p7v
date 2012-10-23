@@ -421,6 +421,10 @@ main (int argc, char **argv) {
       }
    }
 
+   /* Print package name and version if verbose. */
+   if (verbose) {
+      fprintf (stderr, PACKAGE_NAME " version " PACKAGE_VERSION "\n");
+   }
 
    /* Open input file for reading. Use stdin if none supplied. */
    if (optind < argc) {

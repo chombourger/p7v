@@ -129,7 +129,8 @@ run_tests() {
          if [ ${result} -ne 0 ]
          then
             echo "stdout output does not match!" 2>&1
-            return ${result}
+            diff -u ${GOLDEN_DIR}/${file}.stdout ${file}.stdout
+            [ -z "${UPDATE_GOLDEN}" ] && return ${result}
          fi
       fi
    
@@ -141,7 +142,8 @@ run_tests() {
          if [ ${result} -ne 0 ]
          then
             echo "stderr output does not match!" 2>&1
-            return ${result}
+            diff -u ${GOLDEN_DIR}/${file}.stderr ${file}.stderr
+            [ -z "${UPDATE_GOLDEN}" ] && return ${result}
          fi
       fi
 
