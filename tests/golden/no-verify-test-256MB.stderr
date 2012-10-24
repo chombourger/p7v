@@ -1,0 +1,7 @@
+p7v version 0.2
+opened 'no-verify-test-256MB.signed' for reading.
+opened 'no-verify-test-256MB.p7v' for writing.
+initialized.
+p7v: warning: verification skipped as requested!
+data extracted.
+exiting with status 0

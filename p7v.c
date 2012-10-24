@@ -40,6 +40,9 @@
 /** Flag set by --verbose. */
 static int verbose;
 
+/** Flag set by --no-verify. */
+static int no_verify;
+
 /** Path to the NSS database. */
 static char *nssdir = 0;
 
@@ -235,7 +238,7 @@ verify_signer (NSSCMSSignedData *p_signed_data, unsigned int signer) {
 
    /* Print signer if verbose. */
 
-   if (verbose) {
+   if (verbose != 0) {
       char *p_signer_cn;
       static char empty[] = { "" };
 
@@ -348,19 +351,43 @@ check_message (p7v_decoder_t decoder, NSSCMSMessage *p_message) {
    return result; 
 }
 
+/**
+  * Finish the decoding process and verify signed content.
+  *
+  * @param decoder the decoder descriptor.
+  * @param skip_verification non-zero to skip verification
+  *
+  * @return P7V_OK on success, an error code otherwise.
+  *
+  */
 static p7v_result_t
-decoder_finish (p7v_decoder_t decoder) {
+decoder_finish (p7v_decoder_t decoder, int skip_verification) {
 
    p7v_result_t result = P7V_OK;
    NSSCMSMessage *p_message;
 
-   TRACE3 (("called with decoder=%p", decoder));
+   TRACE3 ((
+      "called with decoder=%p, skip_verification=%d",
+      decoder, skip_verification
+   ));
 
    p_message = NSS_CMSDecoder_Finish (decoder.p_context);
    TRACE4 (("NSS_CMSDecoder_Finish() returned %p", p_message));
 
    if (p_message != 0) {
-      result = check_message (decoder, p_message);
+
+      /* Verify the signature(s). */
+      if (skip_verification == 0) {
+         result = check_message (decoder, p_message);
+      }
+      else if (verbose != 0) {
+         fprintf (
+            stderr, PACKAGE_NAME ": warning: "
+            "verification skipped as requested!\n"
+         );
+      }
+
+      /* Free memory used by the CMS message. */
       NSS_CMSMessage_Destroy (p_message);
       p_message = 0;
    }
@@ -391,24 +418,29 @@ main (int argc, char **argv) {
      
    while (1) {
       static struct option long_options [] = {
-         { "verbose", no_argument, &verbose, 1 },
-         { 0,         0,           0,        0 }
+         { "no-verify", no_argument, &no_verify, 1 },
+         { "verbose",   no_argument, &verbose,   1 },
+         { 0,           0,           0,          0 }
       };
 
       /* getopt_long stores the option index here. */
       int option_index = 0;
      
-      c = getopt_long (argc, argv, "d:o:v", long_options, &option_index);
+      c = getopt_long (argc, argv, "d:o:nv", long_options, &option_index);
      
       /* Detect the end of the options. */
       if (c == -1) {
          break;
       }
-     
+    
       switch (c) {
 
          case 'd':
             nssdir = optarg;
+            break;
+
+         case 'n':
+            no_verify = 1;
             break;
 
          case 'o':
@@ -422,7 +454,7 @@ main (int argc, char **argv) {
    }
 
    /* Print package name and version if verbose. */
-   if (verbose) {
+   if (verbose != 0) {
       fprintf (stderr, PACKAGE_NAME " version " PACKAGE_VERSION "\n");
    }
 
@@ -433,7 +465,7 @@ main (int argc, char **argv) {
          fprintf (stderr, "failed to open input file '%s'!\n", argv [optind]);
          return P7V_INPUT_OPEN_FAILED;
       }
-      else if (verbose) {
+      else if (verbose != 0) {
          fprintf (stderr, "opened '%s' for reading.\n", argv [optind]);
       }
    }
@@ -448,7 +480,7 @@ main (int argc, char **argv) {
          fprintf (stderr, "failed to open output file '%s'!\n", output);
          return P7V_OUTPUT_OPEN_FAILED;
       }
-      else if (verbose) {
+      else if (verbose != 0) {
          fprintf (stderr, "opened '%s' for writing.\n", output);
       }
    }
@@ -462,7 +494,7 @@ main (int argc, char **argv) {
       fprintf (stderr, "initialization failed (%d)!\n", result);
       return result;
    }
-   else if (verbose) {
+   else if (verbose != 0) {
       fprintf (stderr, "initialized.\n");
    }
 
@@ -494,7 +526,7 @@ main (int argc, char **argv) {
 
    /* Have the decoder verify the output and clean-up things. */
    if (result == P7V_OK) {
-      result = decoder_finish (decoder);
+      result = decoder_finish (decoder, no_verify);
    }
 
    /* On failure, the output shall be deleted (if not stdout). */
@@ -503,11 +535,11 @@ main (int argc, char **argv) {
          (void) unlink (output);
       }
    }
-   else if (verbose) {
+   else if (verbose != 0) {
       fprintf (stderr, "data extracted.\n");
    }
 
-   if (verbose) {
+   if (verbose != 0) {
       fprintf (stderr, "exiting with status %d\n", result);
    }
 

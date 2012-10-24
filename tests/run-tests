@@ -59,6 +59,10 @@ run_tests() {
    for s in 1 2 4 8 16 32 64 128 256 512
    do
       echo "# TEST ${1} with ${s}MB data"
+      if [ -n "${extra_options}" ]
+      then
+         echo "# NOTE calling p7v with extra options: ${extra_options}"
+      fi
 
       expected_result=${expected_result:-0}
       file=${1}-test-${s}MB
@@ -79,7 +83,7 @@ run_tests() {
          dd if=/dev/urandom of=${file}.signed seek=${seek} conv=notrunc bs=1024 count=1 2> /dev/null
       fi
 
-      ${P7V} -v -d ${NSS_DB} -o ${file}.p7v ${file}.signed \
+      ${P7V} -v -d ${NSS_DB} -o ${file}.p7v ${extra_options} ${file}.signed \
          > ${file}.stdout 2> ${file}.stderr
    
       result=${?}
@@ -170,6 +174,9 @@ create_pass_file \
 && expected_result=4 run_tests revoked-signer \
 && trust_cert self \
 && expected_result=4 run_tests altered-package \
+&& revoke_cert self \
+&& expected_result=0 extra_options="-n" run_tests no-verify \
+&& revoke_cert self \
 && delete_nss_db \
 && delete_self_signed_cert \
 && delete_pass_file
