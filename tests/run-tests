@@ -5,8 +5,9 @@ PASS=abcdefg
 P7V=${P7V:-../p7v}
 GOLDEN_DIR=golden
 
-self_signed_cert=self.cert
+self_signed_cert=self
 pass_file=passwd.txt
+john_subj="/C=US/ST=IL/L=Chicago/O=Dummy/OU=Test/CN=John Doe/emailAddress=john.doe@p7v.com"
 
 create_pass_file() {
    echo "${PASS}" > ${pass_file}
@@ -17,12 +18,90 @@ delete_pass_file() {
 }
 
 create_self_signed_cert() {
-   openssl req -x509 -newkey rsa:1024 -keyout ${self_signed_cert} -out ${self_signed_cert}.pub \
+   openssl req -x509 -newkey rsa:1024 -keyout ${self_signed_cert}.privkey -out ${self_signed_cert}.cert \
    -passout pass:abcdefg -subj "/C=US/ST=IL/L=Chicago/O=Dummy/OU=Test/CN=John Doe/emailAddress=john.doe@dummy.me"
 }
 
 delete_self_signed_cert() {
-   rm -f ${self_signed_cert} ${self_signed_cert}.pub
+   rm -f ${self_signed_cert}.cert ${self_signed_cert}.privkey
+}
+
+create_root_ca() {
+   mkdir -p root-ca/{conf,private,public,signed-keys}
+   cat <<EOF > root-ca/conf/openssl.cnf
+[ req ]
+default_bits            = 2048
+default_keyfile         = ./root-ca/private/root.pem
+default_md              = 
+prompt                  = no
+distinguished_name      = root_ca_distinguished_name
+x509_extensions = v3_ca
+
+[ root_ca_distinguished_name ]
+countryName             = US
+stateOrProvinceName     = IL
+localityName            = Chicago
+0.organizationName      = P7V
+commonName              = P7V Root CA
+emailAddress            = david@p7v.com
+
+[ v3_ca ]
+subjectKeyIdentifier=hash
+authorityKeyIdentifier=keyid:always,issuer:always
+basicConstraints = CA:true
+
+[ ca ]
+default_ca              = CA_default
+
+[ CA_default ]
+dir                     = .
+new_certs_dir           = ./root-ca/signed-keys/
+database                = ./root-ca/conf/index
+certificate             = ./root-ca/public/root.pem
+serial                  = ./root-ca/conf/serial
+private_key             = ./root-ca/private/root.pem
+x509_extensions         = usr_cert
+name_opt                = ca_default
+cert_opt                = ca_default
+default_crl_days        = 30
+default_days            = 365
+default_md              = sha256
+preserve                = no
+policy                  = policy_match
+
+[ policy_match ]
+countryName             = optional
+stateOrProvinceName     = optional
+organizationName        = optional
+organizationalUnitName  = optional
+commonName              = supplied
+emailAddress            = supplied
+
+[ usr_cert ]
+basicConstraints=critical,CA:FALSE
+keyUsage = critical,digitalSignature,keyAgreement
+subjectKeyIdentifier=hash
+authorityKeyIdentifier=keyid
+extendedKeyUsage = codeSigning
+
+[ v3_req ]
+keyUsage = critical,digitalSignature,keyAgreement
+extendedKeyUsage = codeSigning
+
+EOF
+   openssl req -nodes -config root-ca/conf/openssl.cnf -days 1825 \
+      -x509 -newkey rsa:2048 -sha256 -out root-ca/public/root.pem -outform PEM \
+   && touch root-ca/conf/index \
+   && echo "01" > root-ca/conf/serial
+}
+
+delete_root_ca() {
+   rm -rf root-ca
+}
+
+create_cert_from_ca() {
+   openssl req -out "${1}.csr" -new -newkey rsa:2048 -nodes -sha256 -keyout "${1}.privkey" -subj "${2}" \
+   && openssl ca -batch -config root-ca/conf/openssl.cnf -in "${1}.csr" -out "${1}.cert"
 }
 
 create_nss_db() {
@@ -35,6 +114,10 @@ delete_nss_db() {
 
 add_cert_to_db() {
    certutil -A -d ${NSS_DB} -n ${1} -i ${2} -t P,P,P
+}
+
+add_ca_to_db() {
+   certutil -A -d ${NSS_DB} -n ${1} -i ${2} -t C,C,C
 }
 
 revoke_cert() {
@@ -55,6 +138,7 @@ run_tests() {
    local file
    local MB
    local result
+   local key=${key:-${self_signed_cert}}
 
    for s in 1 2 4 8 16 32 64 128 256 512
    do
@@ -67,7 +151,7 @@ run_tests() {
       expected_result=${expected_result:-0}
       file=${1}-test-${s}MB
       MB=${s} create_random_data ${file}.raw
-      openssl smime -passin pass:abcdefg -binary -sign -signer ${self_signed_cert}.pub -inkey ${self_signed_cert} -in ${file}.raw -out ${file}.signed -outform DER -nodetach
+      openssl smime -passin pass:abcdefg -binary -sign -signer ${key}.cert -inkey ${key}.privkey -in ${file}.raw -out ${file}.signed -outform DER -nodetach
   
       if [ ${1} = "write-failure" ]
       then
@@ -96,7 +180,7 @@ run_tests() {
       if [ ${result} -ne ${expected_result} ]
       then
          echo "P7V exited with status ${result} but ${expected_result} expected!" >&2
-         return ${result}
+         return 1
       fi
  
       # Is the decoded file present?
@@ -168,7 +252,11 @@ create_pass_file \
 && delete_nss_db \
 && create_nss_db \
 && create_self_signed_cert \
-&& add_cert_to_db self ${self_signed_cert}.pub \
+&& delete_root_ca \
+&& create_root_ca \
+&& add_ca_to_db ca root-ca/public/root.pem \
+&& create_cert_from_ca "john" "${john_subj}" \
+&& add_cert_to_db self ${self_signed_cert}.cert \
 && expected_result=0 run_tests trusted-signer \
 && revoke_cert self \
 && expected_result=4 run_tests revoked-signer \
@@ -176,8 +264,13 @@ create_pass_file \
 && expected_result=4 run_tests altered-package \
 && revoke_cert self \
 && expected_result=0 extra_options="-n" run_tests no-verify \
-&& revoke_cert self \
+&& expected_result=0 key="john" run_tests trusted-ca-signer \
+&& add_cert_to_db john john.cert \
+&& revoke_cert john \
+&& expected_result=4 key="john" run_tests revoked-ca-signer \
 && delete_nss_db \
+&& rm -f *.csr *.privkey *.cert \
+&& delete_root_ca \
 && delete_self_signed_cert \
 && delete_pass_file
 
