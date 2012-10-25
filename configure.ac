@@ -2,7 +2,7 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ([2.61])
-AC_INIT(p7v, 0.2, https://github.com/chombourger/p7v)
+AC_INIT(p7v, 0.3, https://github.com/chombourger/p7v)
 AC_CONFIG_MACRO_DIR([m4])
 AM_INIT_AUTOMAKE([foreign -Wall -Werror])
 AC_CONFIG_SRCDIR([config.h.in])
