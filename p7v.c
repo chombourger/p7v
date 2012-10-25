@@ -48,18 +48,19 @@ static char *nssdir = 0;
 
 /* P7V error codes. */
 typedef enum {
-   P7V_OK = 0,
-   P7V_INPUT_OPEN_FAILED = 1,
-   P7V_OUTPUT_OPEN_FAILED = 2,
-   P7V_OUTPUT_WRITE_FAILED = 3,
-   P7V_VERIFICATION_FAILED = 4,
-   P7V_NSS_INIT_FAILED = 5,
-   P7V_CMS_DECODER_START_FAILED = 6,
-   P7V_CMS_DECODER_UPDATE_FAILED = 7,
-   P7V_CMS_DECODER_FINISH_FAILED = 8,
-   P7V_CMS_CERT_IMPORT_FAILED = 9,
+   P7V_OK                        = 0, /**< Success. */
+   P7V_INPUT_OPEN_FAILED         = 1, /**< Failed to open input file. */
+   P7V_OUTPUT_OPEN_FAILED        = 2, /**< Failed to open output file. */
+   P7V_OUTPUT_WRITE_FAILED       = 3, /**< Failed to write to output file. */
+   P7V_VERIFICATION_FAILED       = 4, /**< Package verification failed! */
+   P7V_NSS_INIT_FAILED           = 5, /**< NSS Library initialization failed. */
+   P7V_CMS_DECODER_START_FAILED  = 6, /**< Failed to initiate decoding. */
+   P7V_CMS_DECODER_UPDATE_FAILED = 7, /**< Failed to feed decoder. */
+   P7V_CMS_DECODER_FINISH_FAILED = 8, /**< Failure while closing decoder. */
+   P7V_CMS_CERT_IMPORT_FAILED    = 9, /**< Failed to import certificate(s). */
 } p7v_result_t;
 
+/** The package decoder structure. Holds variables needed to work with NSS. */
 typedef struct {
    /** Memory pool for NSS. */
    PLArenaPool *p_arena;
@@ -73,8 +74,11 @@ typedef struct {
 
 /**
   * Initialize P7V.
+  *
   * @param dir NSS database and configuration directory.
+  *
   * @return P7V_OK on success, an error code otherwise.
+  *
   */
 static p7v_result_t
 init (const char *dir) {
@@ -85,7 +89,7 @@ init (const char *dir) {
    TRACE3 (("called with dir='%s'", dir));
 
    PR_Init (PR_SYSTEM_THREAD, PR_PRIORITY_NORMAL, 1);
-   SECStatus sts = NSS_Init (dir);
+   SECStatus sts = NSS_InitReadWrite (dir);
    TRACE4 (("NSS_Init() returned %d", sts));
 
    if (sts == SECSuccess) {
@@ -134,6 +138,7 @@ content_cb (void *arg, const char *buf, unsigned long len) {
   *
   * @param output pointer to the output stream.
   * @param p_decoder pointer to the decoder descriptor
+  *
   * @return P7V_OK on success, an error code otherwise.
   *
   */
@@ -175,6 +180,7 @@ decoder_setup (FILE *output, p7v_decoder_t *p_decoder) {
   * @param decoder the p7v decoder descriptor.
   * @param buf pointer to the input data to be injected.
   * @param len length of the data provided.
+  *
   * @return P7V_OK on success, an error code otherwise.
   *
   */
@@ -203,19 +209,24 @@ decoder_feed (p7v_decoder_t decoder, const char *buf, unsigned long len) {
 /**
   * Verify the nth signature of the signed message.
   *
+  * @param decoder the decoder descriptor.
   * @param p_signed_data pointer to the signed data descriptor.
   * @param signer index of the signer to be checked.
+  *
   * @return P7V_OK on success, an error code otherwise.
   *
   */
 static p7v_result_t
-verify_signer (NSSCMSSignedData *p_signed_data, unsigned int signer) {
+verify_signer (p7v_decoder_t decoder, NSSCMSSignedData *p_signed_data, unsigned int signer) {
 
    p7v_result_t result;
    NSSCMSSignerInfo *p_signer_info;
    NSSCMSVerificationStatus verif_status;
    const char *p_verif_status_string;
+   SECCertificateUsage usage;
+   CERTCertificate *p_issuer_cert;
    SECStatus sts;
+   int flags;
 
    TRACE3 (("called with p_signed_data=%p, signer=%u", p_signed_data, signer));
 
@@ -226,7 +237,7 @@ verify_signer (NSSCMSSignedData *p_signed_data, unsigned int signer) {
    /* Get verification status. */
 
    sts = NSS_CMSSignedData_VerifySignerInfo (
-      p_signed_data, signer, 0, NSS_CERT_USAGE
+      p_signed_data, signer, CERT_GetDefaultCertDB (), NSS_CERT_USAGE
    );
    TRACE4 (("NSS_CMSSignedData_VerifySignerInfo() returned %d", sts));
 
@@ -265,12 +276,14 @@ verify_signer (NSSCMSSignedData *p_signed_data, unsigned int signer) {
 /**
   * Verify the signatures found in the signed message.
   *
+  * @param decoder the decoder descriptor
   * @param p_signed_data pointer to the signed data descriptor.
+  *
   * @return P7V_OK on success, an error code otherwise.
   *
   */
 static p7v_result_t
-verify_signers (NSSCMSSignedData *p_signed_data) {
+verify_signers (p7v_decoder_t decoder, NSSCMSSignedData *p_signed_data) {
 
    p7v_result_t result = P7V_OK;
    unsigned int signers_count;
@@ -281,7 +294,7 @@ verify_signers (NSSCMSSignedData *p_signed_data) {
 
    /* Import certificates found in the signed message. */
    sts = NSS_CMSSignedData_ImportCerts (
-      p_signed_data, CERT_GetDefaultCertDB (), NSS_CERT_USAGE, PR_FALSE
+      p_signed_data, CERT_GetDefaultCertDB (), NSS_CERT_USAGE, PR_TRUE
    );
    TRACE4 (("NSS_CMSSignedData_ImportCerts() returned %d", sts));
 
@@ -296,7 +309,7 @@ verify_signers (NSSCMSSignedData *p_signed_data) {
       TRACE4 (("NSS_CMSSignedData_SignerInfoCount() returned %u", signers_count));
 
       for (signer = 0; signer < signers_count; signer ++) {
-         result = verify_signer (p_signed_data, signer);
+         result = verify_signer (decoder, p_signed_data, signer);
          if (result != P7V_OK) break;
       }
    }
@@ -308,7 +321,9 @@ verify_signers (NSSCMSSignedData *p_signed_data) {
 /**
   * Check the message integrity and in particular certificates of the signer(s).
   *
+  * @param decoder the decoder descritor
   * @param p_message pointer to the message to be checked.
+  *
   * @return P7V_OK on success, an error code otherwise.
   *
   */
@@ -341,7 +356,7 @@ check_message (p7v_decoder_t decoder, NSSCMSMessage *p_message) {
                NSS_CMSContentInfo_GetContent (p_content_info);
             TRACE4 (("NSS_CMSContentInfo_GetContent() returned %p", p_signed_data));
 
-            result = verify_signers (p_signed_data);
+            result = verify_signers (decoder, p_signed_data);
             if (result != P7V_OK) break;
          }
       }

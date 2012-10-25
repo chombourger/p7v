@@ -8,6 +8,7 @@ GOLDEN_DIR=golden
 self_signed_cert=self
 pass_file=passwd.txt
 john_subj="/C=US/ST=IL/L=Chicago/O=Dummy/OU=Test/CN=John Doe/emailAddress=john.doe@p7v.com"
+mike_subj="/C=US/ST=IL/L=Chicago/O=Dummy/OU=Test/CN=Mike Mitch/emailAddress=mike.mitch@p7v.com"
 
 create_pass_file() {
    echo "${PASS}" > ${pass_file}
@@ -140,13 +141,15 @@ run_tests() {
    local result
    local key=${key:-${self_signed_cert}}
 
+   echo "# TEST ${1}"
+   if [ -n "${extra_options}" ]
+   then
+      echo "# NOTE calling p7v with extra options: ${extra_options}"
+   fi
+
    for s in 1 2 4 8 16 32 64 128 256 512
    do
-      echo "# TEST ${1} with ${s}MB data"
-      if [ -n "${extra_options}" ]
-      then
-         echo "# NOTE calling p7v with extra options: ${extra_options}"
-      fi
+      printf "# ${s}MB: "
 
       expected_result=${expected_result:-0}
       file=${1}-test-${s}MB
@@ -179,6 +182,7 @@ run_tests() {
 
       if [ ${result} -ne ${expected_result} ]
       then
+         echo "FAILED!"
          echo "P7V exited with status ${result} but ${expected_result} expected!" >&2
          return 1
       fi
@@ -189,6 +193,7 @@ run_tests() {
 
          if [ ! -f ${file}.p7v ]
          then
+            echo "FAILED!"
             echo "P7V returned success but output file not found!" >&2
             return 1
          fi
@@ -198,17 +203,21 @@ run_tests() {
          result=${?}
          if [ ${result} -ne 0 ]
          then
+            echo "FAILED!"
             echo "decoded file does not match raw input file!" >&2
             return ${result}
          fi
       else
          if [ -f ${file}.p7v ]
          then
+            echo "FAILED!"
             echo "P7V returned error but output file found!" >&2
             return 1
          fi
       fi
-   
+  
+      echo "PASSED"
+ 
       # Compare the tool standard output with golden sample
       if [ -f ${GOLDEN_DIR}/${file}.stdout ]
       then
@@ -256,6 +265,7 @@ create_pass_file \
 && create_root_ca \
 && add_ca_to_db ca root-ca/public/root.pem \
 && create_cert_from_ca "john" "${john_subj}" \
+&& create_cert_from_ca "mike" "${mike_subj}" \
 && add_cert_to_db self ${self_signed_cert}.cert \
 && expected_result=0 run_tests trusted-signer \
 && revoke_cert self \
@@ -268,6 +278,8 @@ create_pass_file \
 && add_cert_to_db john john.cert \
 && revoke_cert john \
 && expected_result=4 key="john" run_tests revoked-ca-signer \
+&& expected_result=0 key="mike" run_tests trusted-other-ca-signer \
+&& certutil -L -d ${NSS_DB} \
 && delete_nss_db \
 && rm -f *.csr *.privkey *.cert \
 && delete_root_ca \
