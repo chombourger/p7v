@@ -507,6 +507,9 @@ main (int argc, char **argv) {
    result = (int) init (nssdir);
    if (result != P7V_OK) {
       fprintf (stderr, "initialization failed (%d)!\n", result);
+      if (fout != stdout) {
+        (void) unlink (output);
+      }
       return result;
    }
    else if (verbose != 0) {
@@ -517,6 +520,9 @@ main (int argc, char **argv) {
    result = decoder_setup (fout, &decoder);
    if (result != P7V_OK) {
       fprintf (stderr, "failed to setup decoder (%d)\n", result);
+      if (fout != stdout) {
+        (void) unlink (output);
+      }
       return result;
    }
 
@@ -536,8 +542,8 @@ main (int argc, char **argv) {
    }
 
    /* Close input and output streams. */
-   if (fout != stdout) fclose (fout);
-   if (fin != stdin) fclose (fin);
+   if (fout && fout != stdout) fclose (fout);
+   if (fin && fin != stdin) fclose (fin);
 
    /* Have the decoder verify the output and clean-up things. */
    if (result == P7V_OK) {
